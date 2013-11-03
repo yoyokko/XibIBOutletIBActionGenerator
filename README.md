@@ -1,5 +1,7 @@
 # XibOutletActionGenerator
   XOAG is a python script to generate IBOutlet and IBAction for u.
+  
+  .xib, .h, .m files will be modified to generate properties, ibactions and connection with .h and .xib file.
 
 ## Usage:
   python generator.py [-a -c] xibfile
