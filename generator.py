@@ -1,15 +1,16 @@
 #/usr/bin/python
+
 __author__ = 'yoyokko@gmail.com'
 
-import sys
+import sys, getopt
 import os
 import xml.dom.minidom
 import random
+from xcodeclass import *
 
 randomcharacters = list('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
 
-
-class UIView:
+class Property:
     def __init__(self):
         self.name = ''
         self.type = ''
@@ -31,34 +32,38 @@ def randomidentify():
         randomcharacters[random.randrange(0, len(randomcharacters))])
 
 
-def parseOneView(xmldocument, viewDom, uiviews):
-    identifiy = viewDom.getAttribute('id')
-    labelnameDesc = viewDom.getAttribute('userLabel')
-    if labelnameDesc == '':
-        accessibilitys = viewDom.childNodes
+def parseoneview(xmldocument, viewdom, properties=[], actions=[]):
+    identifiy = viewdom.getAttribute('id')
+    userlabel = viewdom.getAttribute('userLabel')
+    if userlabel == '':
+        accessibilitys = viewdom.childNodes
         for accessibility in accessibilitys:
             if accessibility.nodeType == accessibility.ELEMENT_NODE:
                 keyname = accessibility.getAttribute('key')
                 if keyname == 'accessibilityConfiguration':
-                    labelnameDesc = accessibility.getAttribute('label')
+                    userlabel = accessibility.getAttribute('label')
                     break
-    viewtype = 'UI' + viewDom.tagName.title()
 
-    if viewtype.endswith('view'):
-        viewtype = viewtype[:-4] + 'View'
+    propertytype = 'UI' + viewdom.tagName.title()
 
-    labelnames = labelnameDesc.split(';')
+    if propertytype.endswith('view'):
+        propertytype = propertytype[:-4] + 'View'
 
-    if len(labelnames) > 0 and labelnameDesc != '':
+    labelnames = userlabel.split(';')
+
+    if len(labelnames) > 0 and userlabel != '':
         for labelname in labelnames:
-            if labelname.startswith('SEL'):
+            if labelname.startswith('@sel('):
                 # this is a isaction
                 # try to get connections under current xml node
-                sel = labelname[4:-1]
-                connections = viewDom.getElementsByTagName('connections')
+                sel = labelname[5:-1]
+                actions.append(sel)
+
+                connections = viewdom.getElementsByTagName('connections')
                 if len(connections) == 0:
+                    # create connections element if not exist
                     connections = xmldocument.createElement('connections')
-                    viewDom.appendChild(connections)
+                    viewdom.appendChild(connections)
                     connection = connections
                 else:
                     connection = connections[0]
@@ -70,6 +75,7 @@ def parseOneView(xmldocument, viewDom, uiviews):
                         if selector == sel:
                             selexists = True
                             break
+
                 if not selexists:
                     action = xmldocument.createElement('action')
                     # <action selector="messageTheBuddy:" destination="-1" eventType="touchUpInside" id="KLS-tA-9Id"/>
@@ -78,28 +84,31 @@ def parseOneView(xmldocument, viewDom, uiviews):
                     action.setAttribute('eventType', 'touchUpInside')
                     action.setAttribute('id', randomidentify())
                     connection.appendChild(action)
+
             else:
                 # this is a iboutlet property
-                uiview = UIView()
-                uiview.name = labelname
-                uiview.type = viewtype
-                uiview.identify = identifiy
-                uiviews.append(uiview)
+                property = Property()
+                property.name = labelname
+                property.type = propertytype
+                property.identify = identifiy
+                properties.append(property)
 
-    subviews = viewDom.getElementsByTagName('subviews')
+    subviews = viewdom.getElementsByTagName('subviews')
     if len(subviews) > 0:
         for oneview in subviews[0].childNodes:
             if oneview.nodeType == oneview.ELEMENT_NODE:
-                parseOneView(xmldocument, oneview, uiviews)
+                parseoneview(xmldocument, oneview, properties, actions)
 
 
-def parseXibFile(xibfile):
+def parsexibfile(xibfile, headerfile, implementationfile, makeacopy=False, arc=False):
     # try to get uiviews with 'userLabel' or 'accessibilityLabel'
     sc_dom = xml.dom.minidom.parse(xibfile)
     views = sc_dom.getElementsByTagName('objects')[0].getElementsByTagName('view')
-    uiviews = []
+
+    properties = []
+    actions = []
     for view in views:
-        parseOneView(sc_dom, view, uiviews)
+        parseoneview(sc_dom, view, properties, actions)
 
     # try to get existing iboutlet connections
     iboutlets = {}
@@ -111,42 +120,70 @@ def parseXibFile(xibfile):
                 identify = outlet.getAttribute('id')
                 iboutlets[destination] = identify
 
-    print '\n\n<!--Begin auto generated iboutlet codes-->'
-    for uiview in uiviews:
-        if iboutlets.has_key(uiview.identify) == False:
-            print '<outlet property="%s" destination="%s" id="%s"/>' % (uiview.name, uiview.identify, randomidentify())
+    # generate outlets in xib file
+    for oneproperty in properties:
+        if not iboutlets.has_key(oneproperty.identify):
+            print '<outlet property="%s" destination="%s" id="%s"/>' % (oneproperty.name, oneproperty.identify, randomidentify())
             outletelement = sc_dom.createElement('outlet')
             outletelement.setAttribute('id', randomidentify())
-            outletelement.setAttribute('destination', uiview.identify)
-            outletelement.setAttribute('property', uiview.name)
+            outletelement.setAttribute('destination', oneproperty.identify)
+            outletelement.setAttribute('property', oneproperty.name)
             connections[0].appendChild(outletelement)
-    print '<!--End auto generated iboutlet codes-->\n'
+
+    savedXib = xibfile
+    if makeacopy:
+        savedXib = xibfile[:-4] + '_autooutlets.xib'
+    sc_dom.writexml(open(savedXib, 'w'), indent="", addindent="", newl='')
 
     print '\n\n'
 
-    savedXib = xibfile[:-4] + '_autooutlets.xib'
-    sc_dom.writexml(open(savedXib, 'w'), indent="", addindent="", newl='')
+    # process class file now
+    xcodeclass = XcodeClass(headerfile, implementationfile)
 
-    print '\n\n#pragma -- Begin auto generated iboutlet properties --'
-    for uiview in uiviews:
-        print '@property (nonatomic, retain) IBOutlet %s *%s;' % (uiview.type, uiview.name)
-    print '#pragma -- End auto generated iboutlet properties -- \n'
+    # generate iboutlet properties
+    for oneproperty in properties:
+        if arc:
+            xcodeclass.addproperty(oneproperty.name, oneproperty.type, 'weak', True)
+        else:
+            xcodeclass.addproperty(oneproperty.name, oneproperty.type, 'retain', False)
 
-    print '\n\n#pragma -- Begin auto generated iboutlet properties deallocation --'
-    for uiview in uiviews:
-        print '[_%s release];' % uiview.name
-    print '#pragma -- End auto generated iboutlet properties deallocation -- \n'
+    print '\n\n'
 
+    # generate ibaction actions
+    for oneaction in actions:
+        xcodeclass.addmethod(oneaction)
+
+    xcodeclass.savechanges(makeacopy)
 
 def main(argv):
     if len(argv) == 0:
         print 'No xib file to parse'
         sys.exit(2)
 
-    xibfile = argv[0]
+    arc = False
+    makeacopy = False
+    xibfile = ''
+
+    try:
+        opts, args = getopt.getopt(argv, "ac", [])
+    except getopt.GetoptError as err:
+        print(err) # will print something like "option -a not recognized"
+        sys.exit(2)
+    for o, a in opts:
+        if o == '-a':
+            arc = True
+        elif o == '-c':
+            makeacopy = True
+        else:
+            assert False, "unhandled option"
+    if len(args) > 0:
+        xibfile = args[0]
+
+    headerfile = xibfile[:-4]+'.h'
+    implementationfile = xibfile[:-4]+'.m'
 
     if os.path.exists(xibfile):
-        parseXibFile(xibfile)
+        parsexibfile(xibfile, headerfile, implementationfile, makeacopy, arc)
 
 
 if __name__ == '__main__':
